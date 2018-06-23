@@ -42,7 +42,7 @@ cd blse
 
 
 Then, get the embeddings, either by training your own,
-or by downloading the [pretrained embeddings](https://drive.google.com/open?id=1GpyF2h0j8K5TKT7y7Aj0OyPgpFc8pMNS) mentioned in the paper,
+or by downloading the [pretrained embeddings](https://drive.google.com/open?id=1f6NUVo5aIyd2IPdY2JDEBhRhCEBo0cCA) mentioned in the paper,
 and put them in the 'embeddings' directory:
 
 
