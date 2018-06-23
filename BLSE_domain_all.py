@@ -2,24 +2,68 @@ import argparse
 import sys
 from copy import deepcopy
 from blse import *
-from Utils.Semeval_2013_Dataset import *
 from sklearn.metrics import f1_score
+from Utils.Semeval_2013_Dataset import *
+
+def keep_n_models(weightdir, n=10):
+    """
+    Deletes all but n-best model weights in a directory
+    : param n: number of models to keep
+    """
+    keep = [(0,'')]
+    remove = []
+    for file in os.listdir(weightdir):
+        epochs = int(re.findall('[0-9]+', file.split('-')[-4])[0])
+        batch = int(re.findall('[0-9]+', file.split('-')[-3])[0])
+        alp = float(re.findall('0.[0-9]+', file.split('-')[-2])[0])
+        acc = float(re.findall('0.[0-9]+', file.split('-')[-1])[0])
+        if acc > keep[-1][0]:
+            keep.append((acc, file))
+            keep = sorted(keep,reverse=True)
+            if len(keep) > n:
+                candidate = keep.pop()
+                if candidate != (0, ''):
+                    remove.append(candidate)
+        else:
+            remove.append((acc, file))
+    #print(len(remove))
+    for acc, file in remove:
+        try:
+            os.remove(os.path.join(weightdir, file))
+        except OSError:
+            pass
+            print("can't find {0}".format(os.path.join(weightdir, file)))
+    print('Kept {0} files'.format(n))
+    for acc, file in keep:
+        print('{0} {1}'.format(acc, file))
 
 def to_array(X, n=2):
+    """
+    Converts a list scalars to an array of size len(X) x n
+    >>> to_array([0,1], n=2)
+    >>> array([[ 1.,  0.],
+               [ 0.,  1.]])
+    """
     return np.array([np.eye(n)[x] for x in X])
 
 def per_class_f1(y, pred):
+    """
+    Returns the per class f1 score.
+    Todo: make this cleaner.
+    """
+    
     num_classes = len(set(y))
     y = to_array(y, num_classes)
     pred = to_array(pred, num_classes)
     
     results = []
     for j in range(num_classes):
-        class_y = y[:,j]
-        class_pred = pred[:,j]
+        class_y = y[:, j]
+        class_pred = pred[:, j]
         f1 = f1_score(class_y, class_pred, average='binary')
         results.append([f1])
     return np.array(results)
+
 
 class BLSE_domain(nn.Module):
     
@@ -170,7 +214,7 @@ class BLSE_domain(nn.Module):
             epochs=100,
             alpha=0.5):
         num_batches = int(len(class_X) / batch_size)
-        best_cross_f1 = 0
+        best_f1 = 0
         num_epochs = 0
         for i in range(epochs):
             idx = 0
@@ -198,29 +242,19 @@ class BLSE_domain(nn.Module):
                 xp = self.predict(xdev).data.numpy().argmax(1)
                 # macro f1
                 dev_f1 = per_class_f1(ydev, xp).mean()
-                
 
-                # check target dev f1
-                crossx = self.trg_dataset._Xdev
-                crossy = self.trg_dataset._ydev
-                xp = self.predict(crossx, src=False).data.numpy().argmax(1)
-                # macro f1
-                cross_f1 = per_class_f1(crossy, xp).mean()
-           
-
-                if cross_f1 > best_cross_f1:
-                    best_cross_f1 = cross_f1
-                    weight_file = os.path.join(weight_dir, '{0}epochs-{1}batchsize-{2}alpha-{3:.3f}crossf1'.format(num_epochs, batch_size, alpha, best_cross_f1))
+                if dev_f1 > best_f1:
+                    best_f1 = dev_f1
+                    weight_file = os.path.join(weight_dir, '{0}epochs-{1}batchsize-{2}alpha-{3:.3f}crossf1'.format(num_epochs, batch_size, alpha, best_f1))
                     self.dump_weights(weight_file)
 
 
-                sys.stdout.write('\r epoch {0} loss: {1:.3f}  trans: {2:.3f}  src_f1: {3:.3f}  trg_f1: {4:.3f}'.format(
-                    i, loss.data[0], score.data[0], dev_f1, cross_f1))
+                sys.stdout.write('\r epoch {0} loss: {1:.3f}  trans: {2:.3f}  src_f1: {3:.3f}'.format(
+                    i, loss.data[0], score.data[0], dev_f1))
                 sys.stdout.flush()
                 self.history['loss'].append(loss.data[0])
                 self.history['dev_cosine'].append(score.data[0])
                 self.history['dev_f1'].append(dev_f1)
-                self.history['cross_f1'].append(cross_f1)
 
     def get_most_probable_translations(self, src_word, n=5):
         px = self.m(self.semb.weight)
@@ -315,11 +349,11 @@ def print_gold(gold_y, outfile):
         for l in gold_y:
             out.write('{0}\n'.format(l))
 
-def print_info(tr_name, test_name, alpha, batch_size):
-    print('{0} --> {1}'.format(tr_name, test_name))
+
+def print_info(train, test, alpha, batch_size):
+    print('{0} --> {1}'.format(train, test))
     print('batch: {0}'.format(batch_size))
     print('alpha: {0}'.format(alpha))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -327,12 +361,10 @@ def main():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-outdim', help="number of classes to predict (default: 2)", default=2, type=int)
-    parser.add_argument('-epochs', default=200, type=int, help="training epochs (default: 80)")
-    parser.add_argument('-alpha', default=.5, type=float, help="trade-off between projection and classification objectives (default: .5)")
-    parser.add_argument('-batch_size', default=200, type=int, help="classification batch size (default: 200)")
-    parser.add_argument('-trans', help='translation pairs (default: general lexicon)', default='lexicons/general_vocab.txt')
+    parser.add_argument('-epochs', default=200, type=int, help="training epochs (default: 200)")
+    parser.add_argument('-trans', help='translation pairs (default: Bing Liu Sentiment Lexicon Translations)', default='lexicons/general_vocab.txt')
     parser.add_argument('-p', '--predictions_dir', help="directory to write predictions", default='predictions/')
-    parser.add_argument('-savedir', default='models', help="where to dump weights during training (default: ./models)")
+    parser.add_argument('-savedir', default='models/amazon-vecs/', help="where to dump weights during training (default: ./models)")
     args = parser.parse_args()
 
     books = Book_Dataset(None, rep=words, one_hot=False, binary=True)
@@ -364,52 +396,60 @@ if __name__ == '__main__':
                                       binary=True, rep=words,
                                       one_hot=False)
 
-    data =  [('semeval_2016', semeval_2016, 'embeddings/twitter_embeddings.txt'),
+
+    data =  [('books', books, 'embeddings/amazon-sg-300.txt'),
+             ('semeval_2016', semeval_2016, 'embeddings/twitter_embeddings.txt'),
              ('semeval_2013', semeval_2013, 'embeddings/twitter_embeddings.txt'),
-             ('books', books, '../embeddings/wikipedia-cnn-embeddings/sg-300amazon-book.txt'),
-             ('dvd', dvd, '../embeddings/wikipedia-cnn-embeddings/sg-300amazon-dvd.txt'),
-             ('electronics', electronics, '../embeddings/wikipedia-cnn-embeddings/sg-300amazon-electronics.txt'),
-             ('kitchen', kitchen, '../embeddings/wikipedia-cnn-embeddings/sg-300amazon-kitchen.txt'),
-             ('all', train_dataset, 'embeddings/amazon-sg-300.txt')]
+             ('dvd', dvd, 'embeddings/amazon-sg-300.txt'),
+             ('electronics', electronics, 'embeddings/amazon-sg-300.txt'),
+             ('kitchen', kitchen, 'embeddings/amazon-sg-300.txt')
+             #('all', train_dataset, 'embeddings/amazon-sg-300.txt'),
+             ]
 
-# iterate over all datasets as train and test
-for tr_name, train, source_embedding_file in data:
-    for test_name, test, target_embedding_file in data:
-        if tr_name != test_name:
+    # iterate over all datasets as train and test
+    for tr_name, train, source_embedding_file in data:
+        for test_name, test, target_embedding_file in data:
+            if tr_name != test_name:
 
-            savedir = 'models/{0}/{1}'.format(tr_name, test_name)
+                # If we use the ppmi lexicons, each source-target combination has its own lexicon
+                # Otherwise, we use the same lexicon for all
+                if 'ppmi' in args.trans:
+                    trans = 'lexicons/{0}_to_{1}_ppmi_lexicon.txt'.format(tr_name, test_name)
+                    print('Using {0} as projection lexicon'.format(trans))
+                else:
+                    trans = args.trans
+                    print('Using {0} as projection lexicon'.format(trans))
 
-            # open source and target embeddings
-            src_vecs = WordVecs(source_embedding_file)
-            trg_vecs = WordVecs(target_embedding_file)
-            pdataset = ProjectionDataset(args.trans, src_vecs, trg_vecs)
+                # open source and target embeddings
+                src_vecs = WordVecs(source_embedding_file)
+                trg_vecs = WordVecs(target_embedding_file)
+                pdataset = ProjectionDataset(trans, src_vecs, trg_vecs)
 
-            # test dev set for alpha and batch_size
-            for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
-                for batch_size in [20, 50, 100, 200, 500]:
+                savedir = os.path.join(args.savedir,'{0}/{1}'.format(tr_name, test_name))
 
-                    print_info(tr_name, test_name, alpha, batch_size)
+                for alpha in [0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+                    for batch_size in [100, 200, 500]:
 
-                    clf = BLSE_domain(src_vecs, trg_vecs, pdataset,
-                                      train, test, output_dim=2)
+                        print_info(tr_name, test_name, alpha, batch_size)
 
-                    clf.fit(pdataset._Xtrain, pdataset._ytrain,
+                        clf = BLSE_domain(src_vecs, trg_vecs,  pdataset,
+                              train, test, output_dim=2)
+
+                        clf.fit(pdataset._Xtrain, pdataset._ytrain,
                             train._Xtrain, train._ytrain,
                             weight_dir=savedir,
                             batch_size=batch_size,
                             epochs=args.epochs,
                             alpha=alpha)
 
-                    # get best model on dev set
-                    best_acc, best_params, best_weights = get_best_run(savedir, alpha=alpha, batch_size=batch_size)
-                    clf.load_weights(best_weights)
-                    print()
+                        best_acc, best_params, best_weights = get_best_run(savedir, alpha=alpha, batch_size=batch_size)
+                        clf.load_weights(best_weights)
+                        print()
 
-                    # test on test set
-                    acc, f1 = clf.evaluate(test._Xtest, test._ytest, src=False)
-                    print('acc: {0:.3f}'.format(acc))
-                    print('f1:  {0:.3f}'.format(f1))
+                        acc, f1 = clf.evaluate(test._Xtest, test._ytest, src=False)
+                        print('acc: {0:.3f}'.format(acc))
+                        print('f1:  {0:.3f}'.format(f1))
 
-                    # print both gold and prediction to file for later
-                    print_gold(test._ytest, os.path.join(args.predictions_dir, '{0}.gold.txt'.format(test_name)))
-                    clf.evaluate(test._Xtest, test._ytest, src=False, outfile=os.path.join(args.predictions_dir, test_name, '{0}-epochs{1}-batch{2}-alpha{3}.txt'.format(tr_name, best_params[0], best_params[1], best_params[2])))
+                        # print both gold and prediction to file for later
+                        print_gold(test._ytest, os.path.join(args.predictions_dir, '{0}.gold.txt'.format(test_name)))
+                        clf.evaluate(test._Xtest, test._ytest, src=False, outfile=os.path.join(args.predictions_dir, test_name, '{0}-epochs{1}-batch{2}-alpha{3}.txt'.format(tr_name, best_params[0], best_params[1], best_params[2])))
